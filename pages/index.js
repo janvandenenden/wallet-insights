@@ -1,156 +1,209 @@
 import Head from "next/head";
 import Image from "next/image";
 import styles from "../styles/Home.module.css";
-import { useNFTInfo } from "../hooks/useNFTInfo";
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useUserInfo } from "../hooks/useUserInfo";
+import { useNFTData } from "../hooks/useNFTData";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { Alchemy, Network, Utils } from "alchemy-sdk";
 import DataTable from "react-data-table-component";
-import { BLOCKED_PAGES } from "next/dist/shared/lib/constants";
+
+import TransactionsTable from "../components/TransactionsTable";
+import TradedNFTsTable from "../components/TradedNFTsTable";
+import TradesTable from "../components/TradesTable";
+import NFTFlipsTable from "../components/NFTFlipsTable";
+import NFTTable from "../components/NFTTable";
+import WalletInfo from "../components/WalletInfo";
+import WalletInput from "../components/WalletInput";
+import FlipsPNLChart from "../components/FlipsPNLChart";
+import BuySellMintChart from "../components/BuySellMintChart";
+import FlipAnalytics from "../components/FlipAnalytics";
+import TradeAnalytics from "../components/TradeAnalytics";
+
+import formatTransactionData from "../functions/formatTransactionData";
+import createTradesArray from "../functions/createTradesArray";
+import createFlipsArray from "../functions/createFlipsArray";
+import createFlipsVariables from "../functions/createFlipsVariables";
+import checkForNFTTrade from "../functions/checkForNFTTrade";
+import checkForNFTs from "../functions/checkForNFTs";
+import createTradedNFTVariables from "../functions/createTradedNFTVariables";
+import loadingImage from "../public/calculating.gif";
 
 export default function Home() {
   const [showTransactions, setShowTransactions] = useState(false);
-  const [wallet, setWallet] = useState(
-    "0xFE789d706bB84fECFa55095B8A8380D836A6aD3a"
+  const [showNFTTrades, setShowNFTTrades] = useState(false);
+  const [showTradedNFTs, setShowTradedNFTs] = useState(false);
+  const [showNFTFlips, setShowNFTFlips] = useState(true);
+  const [showNFTCollection, setShowNFTCollection] = useState(false);
+  const [mode, setMode] = useState("light");
+  const [wallet, setWallet] = useState("");
+
+  const {
+    transactionData,
+    nftData,
+    walletBalance,
+    resolvedWallet,
+    resolvedWalletMemo,
+    loading,
+    error,
+  } = useUserInfo(wallet);
+  // FORMAT TRANSACTIONDATA
+
+  useMemo(() => {
+    if (transactionData && wallet) {
+      formatTransactionData(transactionData, resolvedWallet);
+    }
+  }, [transactionData, resolvedWallet]);
+
+  //CREATE SUBSET OF NFT TRADES
+  const groupedArray = useMemo(
+    () =>
+      transactionData &&
+      transactionData.reduce((acc, obj) => {
+        if (!acc[obj.group]) {
+          acc[obj.group] = [];
+        }
+        acc[obj.group].push(obj);
+        return acc;
+      }, {}),
+    [transactionData]
   );
-  const walletInput = useRef();
-  const { transactionData, nftData, walletBalance, error } = useNFTInfo(wallet);
-  const columns = [
-    {
-      name: "Group",
-      selector: (row) => row.group,
-      sortable: true,
-      wrap: true,
-      omit: true,
-    },
-    {
-      name: "Type",
-      selector: (row) => row.type,
-      sortable: true,
-    },
-    {
-      name: "Date",
-      selector: (row) => row.metadata.blockTimestamp,
-      sortable: true,
-    },
-    {
-      name: "To",
-      selector: (row) => row.to,
-      sortable: true,
-    },
-    {
-      name: "From",
-      selector: (row) => row.from,
-      sortable: true,
-    },
-    {
-      name: "Value",
-      selector: (row) => row.value,
-      sortable: true,
-    },
-    {
-      name: "Asset",
-      selector: (row) => row.asset,
-      sortable: true,
-    },
-    {
-      name: "Category",
-      selector: (row) => row.category,
-      sortable: true,
-    },
-  ];
-  // console.log(transactionData);
-  const filteredTokens =
-    walletBalance &&
-    Object.keys(walletBalance).filter(
-      (coin) =>
-        (new Number(walletBalance[coin]) >= 0.001 && coin == "ETH") ||
-        coin == "DAI" ||
-        coin == "WETH" ||
-        coin == "TETH" ||
-        coin == "APE" ||
-        coin == "USDC"
-    );
 
-  transactionData &&
-    transactionData.sort((a, b) => {
-      // Convert the blockTimestamp strings to Date objects
-      const dateA = new Date(a.metadata.blockTimestamp);
-      const dateB = new Date(b.metadata.blockTimestamp);
+  //CREATE ARRAY WITH ALL TRANSACTIONS CONTAINING NFTS, THESE INCLUDE NFTS THAT PEOPLE SENT YOU OR AIRDROPPED YOU OR YOU SENT SOMEONE
+  const NFTtransactions = useMemo(
+    () =>
+      transactionData &&
+      Object.values(groupedArray)
+        .filter(checkForNFTs)
+        .map((group) => {
+          return group;
+        }),
+    [groupedArray]
+  );
 
-      // Compare the dates and return a value indicating the order of the elements
-      if (dateA > dateB) return -1;
-      if (dateA < dateB) return 1;
-      return 0;
-    });
+  //CREATE ARRAY WITH ALL TRANSACTIONS CONTAINING NFTS TRADES, THESE ONLY INLCUDE THE ONES YOU BOUGHT OR SOLD
+  const nftBuysAndSells = useMemo(
+    () => NFTtransactions && NFTtransactions.filter(checkForNFTTrade),
+    [NFTtransactions]
+  );
 
-  function addGroupAttribute(objects) {
-    // Create a map that maps attribute values to group indices
-    const valueMap = new Map();
-    let nextGroupIndex = 1;
-    for (const object of transactionData) {
-      const value = object.blockNum;
-      if (!valueMap.has(value)) {
-        valueMap.set(value, nextGroupIndex);
-        nextGroupIndex++;
+  const trades = useMemo(
+    () => nftBuysAndSells && createTradesArray(nftBuysAndSells),
+    [nftBuysAndSells]
+  );
+
+  const addInfoToNFTs = (A, B) => {
+    for (const itemA of A) {
+      for (const itemB of B) {
+        for (const asset of itemB.assets) {
+          if (itemA?.contract?.address === asset?.contract) {
+            // Add the information from itemA to the asset in itemB
+            asset.title = itemA.title;
+            asset.description = itemA.description;
+            asset.tokenUri = itemA.tokenUri;
+            asset.media = itemA.media;
+            asset.nftMetadata = itemA.rawMetadata;
+            asset.contract = itemA.contract;
+            // ... add any other information that you want to add
+          }
+        }
       }
     }
+  };
 
-    // Add the "group" attribute to each object with the same attribute value
-    for (const object of transactionData) {
-      const value = object.blockNum;
-      const groupIndex = valueMap.get(value);
-      object.group = groupIndex;
-    }
+  nftData.map((nft) => {
+    return (nft.formattedAsset = `${nft.contract.address}-${nft.tokenId}`);
+  });
 
-    return objects;
-  }
+  nftData && trades && addInfoToNFTs(nftData, trades);
 
-  transactionData && addGroupAttribute(transactionData);
+  const { mergedFlips, tradedNfts } = useMemo(
+    () => createFlipsArray(trades),
+    [trades]
+  );
 
-  const handleSubmit = useCallback((e) => {
-    e.preventDefault();
-    const { value } = walletInput.current;
-    setWallet(value);
-  }, []);
+  const cleanedFlips = mergedFlips.filter(
+    (obj) =>
+      (obj.coinEntered === "WETH" && obj.coinExited === "WETH") ||
+      (obj.coinEntered === "WETH" && obj.coinExited === "ETH") ||
+      (obj.coinEntered === "ETH" && obj.coinExited === "WETH") ||
+      (obj.coinEntered === "ETH" && obj.coinExited === "ETH")
+  );
 
-  const conditionalRowStyles = [
-    {
-      when: (row) => row.to == wallet.toLowerCase(),
-      style: {
-        color: "green",
-        "&:hover": {
-          cursor: "pointer",
-        },
-      },
-    },
-    {
-      when: (row) => row.group % 2 == 0,
-      style: {
-        // backgroundColor: "whitesmoke",
-        backgroundColor: "lightcyan",
+  const flipsVariables = createFlipsVariables(cleanedFlips);
+  const tradedNFTVariables = createTradedNFTVariables(tradedNfts);
 
-        "&:hover": {
-          cursor: "pointer",
-        },
-      },
-      classNames: ["text-extrabold dark"],
-    },
-    {
-      when: (row) => row.group % 2 == 0 && row.to == wallet.toLowerCase(),
-      style: {
-        // backgroundColor: "whitesmoke",
-        backgroundColor: "lightcyan",
-        color: "green",
+  const nftDataWithBuyInfo =
+    nftData &&
+    tradedNfts &&
+    nftData.map((item) => {
+      // Find the matching object in `a` using the `Array.prototype.find()` method
+      const matchingObjects = tradedNfts.filter(
+        (aItem) =>
+          aItem.formattedAsset === item.formattedAsset && aItem.type !== "sell"
+      );
 
-        "&:hover": {
-          cursor: "pointer",
-        },
-      },
-    },
-  ];
-  console.log(transactionData);
+      // If a matching object was found, add the data from `a` to the current object in `b`
+      if (matchingObjects.length > 0) {
+        return {
+          ...item,
+          value: matchingObjects[0].value,
+          coin: matchingObjects[0].coin,
+          date: matchingObjects[0].date,
+        };
+      }
 
-  const [mode, setMode] = useState("light");
+      // If no matching object was found, return the original object from `b`
+      return item;
+    });
 
+  const getTradedNFTContracts = (flips) => {
+    let contracts = [];
+    flips.map((flip) => {
+      contracts.push(flip.contract);
+    });
+    contracts = contracts.filter(
+      (elem, index, arr) => arr.indexOf(elem) === index
+    );
+    return contracts;
+  };
+
+  // const contracts = useMemo(
+  //   () => mergedFlips && getTradedNFTContracts(mergedFlips),
+  //   [mergedFlips]
+  // );
+
+  // const config = {
+  //   apiKey: process.env.NEXT_PUBLIC_ALCHEMY_API_KEY,
+  //   network: Network.ETH_MAINNET,
+  // };
+  // const alchemy = new Alchemy(config);
+
+  // const metaData = useMemo(() => {
+  //   if (!contracts) {
+  //     return;
+  //   }
+  //   let metaData = [];
+  //   contracts.map((contract) => {
+  //     alchemy.nft
+  //       .getContractMetadata(contract)
+  //       .then((response) => {
+  //         metaData.push(response);
+  //         // console.log(metaData, "response");
+  //         // return response;
+  //       })
+  //       .catch((error) => {
+  //         console.log(error);
+  //         // Handle any errors here
+  //       });
+  //   });
+  //   return metaData;
+  // }, [contracts]);
+
+  // useEffect(() => {
+  //   setData(metaData);
+  // }, []);
+
+  //DETECT DARK MODE CHANGES
   useEffect(() => {
     // Add listener to update styles
     window
@@ -171,89 +224,185 @@ export default function Home() {
         .removeEventListener("change", () => {});
     };
   }, []);
+
   return (
-    <>
-      <div className="container mx-auto px-2">
-        <div className="text-center py-4">
-          <h1 className="text-5xl font-extrabold mt-12">Wallet Insights</h1>
-          <p className="text-center font-thin text-xl mt-4">
-            Enter your Ethereum Wallet Address our ENS name
-          </p>
+    <div className="min-h-screen bg-gradient-to-r from-zinc-100 to-violet-100 dark:from-zinc-900 dark:to-violet-900:">
+      <div className="container mx-auto py-12 px-2">
+        <div className="text-center py-4 md:mb-4">
+          <h1 className="text-4xl md:text-7xl font-extrabold mt-12 mb-6">
+            Explore NFT flip and trade histories
+          </h1>
         </div>
-        <form className="flex flex-col justify-center">
-          <input
-            ref={walletInput}
-            className="border border-slate-800 px-4 py-2 w-1/2 my-5 shadow-lg mx-auto rounded"
-          ></input>
-          <button
-            className="py-3 px-5 bg-slate-800 text-white rounded shadow-md mx-auto uppercase font-bold w-1/2"
-            onClick={(e) => handleSubmit(e)}
-          >
-            Get data
-          </button>
-        </form>
-        {walletBalance && (
-          <div className="my-12 bg-gray-300 p-4 py-8 rounded-xl grid lg:grid-cols-2">
-            <div>
-              <h1 className="text-5xl mb-8 font-extrabold border border-transparent border-b-black border-b-4 py-2">
-                Wallet balance
-              </h1>
-              <ul>
-                {filteredTokens.map((key) => (
-                  <li className="text-xl my-3" key={key}>
-                    {key}: {walletBalance[key]}
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <div className="px-2">
-              <p>
-                Last transaction: {transactionData[0].metadata.blockTimestamp}
-              </p>
-              <p>
-                First transaction:{" "}
-                {
-                  transactionData[`${transactionData.length - 1}`].metadata
-                    .blockTimestamp
-                }
-              </p>
-            </div>
+        <WalletInput
+          updateWallet={(wallet) => setWallet(wallet)}
+          loading={loading}
+        />
+
+        {loading && (
+          <div className="my-24">
+            <Image
+              src={loadingImage}
+              alt=""
+              width="560"
+              height="240"
+              layout="fixed"
+              className="mx-auto"
+            />
           </div>
         )}
-        <div>
-          {transactionData && (
-            <>
-              {showTransactions ? (
-                <button
-                  className="px-4 py-2 text-xl mx-auto rounded text-white bg-slate-800 mb-3"
-                  onClick={() => setShowTransactions(!showTransactions)}
-                >
-                  hide transactions
-                </button>
-              ) : (
-                <button
-                  className="px-4 py-2 text-xl mx-auto rounded text-white bg-slate-800 mb-3"
-                  onClick={() => setShowTransactions(!showTransactions)}
-                >
-                  Show transactions
-                </button>
+
+        {walletBalance && !loading && resolvedWallet && (
+          <WalletInfo
+            walletBalance={walletBalance}
+            transactionData={transactionData}
+            wallet={resolvedWallet}
+            flipsVariables={flipsVariables}
+            tradedNFTVariables={tradedNFTVariables}
+          />
+        )}
+        <div className="">
+          {transactionData && !loading && resolvedWallet && (
+            <div className="">
+              <button
+                className={`${
+                  showTransactions
+                    ? "text-white mr-3 bg-slate-800 dark:bg-slate-400 dark:text-slate-900"
+                    : "border  text-slate-800 dark:text-slate-400 mr-2"
+                } px-4 py-2 mx-auto rounded border border-slate-800 dark:border-slate-400 mr-3  mb-3`}
+                onClick={() => {
+                  setShowTransactions(!showTransactions),
+                    setShowNFTTrades(false),
+                    setShowTradedNFTs(false);
+                  setShowNFTFlips(false);
+                  setShowNFTCollection(false);
+                }}
+              >
+                All Transactions
+              </button>
+
+              <button
+                className={`${
+                  showNFTTrades
+                    ? "text-white mr-3 bg-slate-800 dark:bg-slate-400 dark:text-slate-900"
+                    : "border  text-slate-800 dark:text-slate-400 mr-2"
+                } px-4 py-2 mx-auto rounded border border-slate-800 dark:border-slate-400 mr-3  mb-3`}
+                onClick={() => {
+                  setShowTransactions(false),
+                    setShowNFTTrades(!showNFTTrades),
+                    setShowTradedNFTs(false);
+                  setShowNFTFlips(false);
+                  setShowNFTCollection(false);
+                }}
+              >
+                NFT Transfers
+              </button>
+
+              <button
+                className={`${
+                  showNFTCollection
+                    ? "text-white mr-3 bg-slate-800 dark:bg-slate-400 dark:text-slate-900"
+                    : "border  text-slate-800 dark:text-slate-400 mr-2"
+                } px-4 py-2 mx-auto rounded border border-slate-800 dark:border-slate-400 mr-3  mb-3`}
+                onClick={() => {
+                  setShowTransactions(false),
+                    setShowNFTTrades(false),
+                    setShowTradedNFTs(false);
+                  setShowNFTFlips(false);
+                  setShowNFTCollection(!showNFTCollection);
+                }}
+              >
+                NFT collection
+              </button>
+
+              <button
+                className={`${
+                  showTradedNFTs
+                    ? "text-white mr-3 bg-slate-800 dark:bg-slate-400 dark:text-slate-900"
+                    : "border  text-slate-800 dark:text-slate-400 mr-2"
+                } px-4 py-2 mx-auto rounded border border-slate-800 dark:border-slate-400 mr-3  mb-3`}
+                onClick={() => {
+                  setShowTransactions(false),
+                    setShowNFTTrades(false),
+                    setShowTradedNFTs(!showTradedNFTs);
+                  setShowNFTFlips(false);
+                  setShowNFTCollection(false);
+                }}
+              >
+                Traded NFTs
+              </button>
+              <button
+                className={`${
+                  showNFTFlips
+                    ? "text-white mr-3 bg-slate-800 dark:bg-slate-400 dark:text-slate-900"
+                    : "border  text-slate-800 dark:text-slate-400 mr-2"
+                } px-4 py-2 mx-auto rounded border border-slate-800 dark:border-slate-400 mr-3  mb-3`}
+                onClick={() => {
+                  setShowTransactions(false),
+                    setShowNFTTrades(false),
+                    setShowTradedNFTs(false);
+                  setShowNFTFlips(!showNFTFlips);
+                  setShowNFTCollection(false);
+                }}
+              >
+                NFT Flips
+              </button>
+
+              {showTransactions && (
+                <>
+                  <TransactionsTable
+                    transactions={transactionData}
+                    wallet={resolvedWallet}
+                  />
+                </>
+              )}
+              {nftData && !loading && resolvedWallet && showNFTCollection && (
+                <NFTTable
+                  wallet={resolvedWallet}
+                  nftData={nftDataWithBuyInfo}
+                />
               )}
 
-              {showTransactions ? (
-                <DataTable
-                  columns={columns}
-                  data={transactionData}
-                  pagination
-                  conditionalRowStyles={conditionalRowStyles}
-                  fixedHeader
-                />
-              ) : (
-                ""
+              {showNFTTrades && NFTtransactions && (
+                <TradesTable trades={NFTtransactions} wallet={resolvedWallet} />
               )}
-            </>
+
+              {showTradedNFTs && tradedNfts && (
+                <div className="my-12">
+                  <TradeAnalytics tradeVariables={tradedNFTVariables} />
+
+                  <div className="my-24">
+                    <h1 className="mb-12 font-extrabold text-start text-6xl">
+                      Trade history
+                    </h1>
+                    <TradedNFTsTable
+                      tradedNfts={tradedNfts}
+                      wallet={resolvedWallet}
+                    />
+                  </div>
+                  <BuySellMintChart tradedNfts={tradedNfts} />
+                </div>
+              )}
+
+              {showNFTFlips && cleanedFlips && (
+                <div className="my-12">
+                  <FlipAnalytics flipsVariables={flipsVariables} />
+
+                  <div className="my-24">
+                    <h1 className="mb-12 font-extrabold text-start text-6xl">
+                      Flip history
+                    </h1>
+                    <NFTFlipsTable
+                      flips={cleanedFlips}
+                      wallet={resolvedWallet}
+                    />
+                  </div>
+                  <FlipsPNLChart flips={cleanedFlips} />
+                </div>
+              )}
+            </div>
           )}
         </div>
       </div>
-    </>
+    </div>
   );
 }
